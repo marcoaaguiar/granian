@@ -69,6 +69,7 @@ impl CallbackWatcherHTTP {
     }
 
     fn err(&self, py: Python, err: Bound<PyAny>) {
+        self.proto.get().abort_response_stream();
         callback_impl_done_err!(self, py, &PyErr::from_value(err));
     }
 

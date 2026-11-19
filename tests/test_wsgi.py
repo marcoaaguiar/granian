@@ -62,6 +62,15 @@ async def test_iterbody(wsgi_server, runtime_mode):
 @pytest.mark.asyncio
 @pytest.mark.skipif(bool(os.getenv('PGO_RUN')), reason='PGO build')
 @pytest.mark.parametrize('runtime_mode', ['mt', 'st'])
+async def test_iterbody_error(wsgi_server, runtime_mode):
+    async with wsgi_server(runtime_mode) as port:
+        with pytest.raises(httpx.RemoteProtocolError):
+            httpx.get(f'http://localhost:{port}/iterbody_err')
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(bool(os.getenv('PGO_RUN')), reason='PGO build')
+@pytest.mark.parametrize('runtime_mode', ['mt', 'st'])
 async def test_app_error(wsgi_server, runtime_mode):
     async with wsgi_server(runtime_mode) as port:
         res = httpx.get(f'http://localhost:{port}/err_app')

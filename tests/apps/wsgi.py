@@ -31,11 +31,24 @@ def iterbody(environ, protocol):
     return response()
 
 
+def iterbody_err(environ, protocol):
+    def response():
+        yield b'test'
+        1 / 0
+
+    protocol('200 OK', [('content-type', 'text/plain; charset=utf-8')])
+    return response()
+
+
 def err_app(environ, protocol):
     1 / 0
 
 
 def app(environ, protocol):
-    return {'/info': info, '/echo': echo, '/iterbody': iterbody, '/err_app': err_app}[environ['PATH_INFO']](
-        environ, protocol
-    )
+    return {
+        '/info': info,
+        '/echo': echo,
+        '/iterbody': iterbody,
+        '/iterbody_err': iterbody_err,
+        '/err_app': err_app,
+    }[environ['PATH_INFO']](environ, protocol)

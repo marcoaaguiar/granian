@@ -24,7 +24,7 @@ use crate::{
 pub(crate) type WebsocketDetachedTransport = (i32, bool, Option<WSTxStream>);
 
 struct ResponseBodyStream {
-    inner: mpsc::UnboundedReceiver<body::Bytes>,
+    inner: mpsc::UnboundedReceiver<anyhow::Result<body::Bytes>>,
     closed: Arc<SetOnce<()>>,
 }
 
@@ -44,7 +44,7 @@ impl body::Body for ResponseBodyStream {
     ) -> Poll<Option<Result<body::Frame<Self::Data>, Self::Error>>> {
         self.inner
             .poll_recv(cx)
-            .map(|item| item.map(|data| Ok(body::Frame::data(data))))
+            .map(|item| item.map(|data| data.map(body::Frame::data)))
     }
 
     fn is_end_stream(&self) -> bool {
@@ -57,8 +57,8 @@ impl body::Body for ResponseBodyStream {
 }
 
 impl ResponseBodyStream {
-    fn new(notify: Arc<SetOnce<()>>) -> (mpsc::UnboundedSender<body::Bytes>, Self) {
-        let (body_tx, body_rx) = mpsc::unbounded_channel::<body::Bytes>();
+    fn new(notify: Arc<SetOnce<()>>) -> (mpsc::UnboundedSender<anyhow::Result<body::Bytes>>, Self) {
+        let (body_tx, body_rx) = mpsc::unbounded_channel::<anyhow::Result<body::Bytes>>();
         let slf = Self {
             inner: body_rx,
             closed: notify,
@@ -69,11 +69,11 @@ impl ResponseBodyStream {
 
 #[pyclass(frozen, module = "granian._granian")]
 pub(crate) struct RSGIHTTPStreamTransport {
-    tx: mpsc::UnboundedSender<body::Bytes>,
+    tx: mpsc::UnboundedSender<anyhow::Result<body::Bytes>>,
 }
 
 impl RSGIHTTPStreamTransport {
-    pub fn new(transport: mpsc::UnboundedSender<body::Bytes>) -> Self {
+    pub fn new(transport: mpsc::UnboundedSender<anyhow::Result<body::Bytes>>) -> Self {
         Self { tx: transport }
     }
 }
@@ -84,14 +84,14 @@ impl RSGIHTTPStreamTransport {
 impl RSGIHTTPStreamTransport {
     fn send_bytes<'p>(&self, py: Python<'p>, data: Cow<[u8]>) -> PyResult<Bound<'p, PyAny>> {
         let bdata = body::Bytes::from(std::convert::Into::<Box<[u8]>>::into(data));
-        match self.tx.send(bdata) {
+        match self.tx.send(Ok(bdata)) {
             Ok(()) => empty_future_into_py(py),
             _ => err_future_into_py(py, error_stream!()),
         }
     }
 
     fn send_str<'p>(&self, py: Python<'p>, data: String) -> PyResult<Bound<'p, PyAny>> {
-        match self.tx.send(body::Bytes::from(data)) {
+        match self.tx.send(Ok(body::Bytes::from(data))) {
             Ok(()) => empty_future_into_py(py),
             _ => err_future_into_py(py, error_stream!()),
         }
@@ -105,6 +105,7 @@ pub(crate) struct RSGIHTTPProtocol {
     tx: Mutex<Option<oneshot::Sender<PyResponse>>>,
     body: Mutex<Option<body::Incoming>>,
     body_stream: Arc<AsyncMutex<Option<http_body_util::BodyStream<body::Incoming>>>>,
+    response_stream: Mutex<Option<mpsc::WeakUnboundedSender<anyhow::Result<body::Bytes>>>>,
     disconnected: Arc<atomic::AtomicBool>,
 }
 
@@ -121,7 +122,14 @@ impl RSGIHTTPProtocol {
             tx: Mutex::new(Some(tx)),
             body: Mutex::new(Some(body)),
             body_stream: Arc::new(AsyncMutex::new(None)),
+            response_stream: Mutex::new(None),
             disconnected: Arc::new(atomic::AtomicBool::new(false)),
+        }
+    }
+
+    pub fn abort_response_stream(&self) {
+        if let Some(stream) = self.response_stream.lock().unwrap().take().and_then(|v| v.upgrade()) {
+            _ = stream.send(Err(anyhow::anyhow!("Closed with outstanding data")));
         }
     }
 
@@ -250,6 +258,7 @@ impl RSGIHTTPProtocol {
     ) -> PyResult<Bound<'p, RSGIHTTPStreamTransport>> {
         if let Some(tx) = self.tx.lock().unwrap().take() {
             let (body_tx, body_stream) = ResponseBodyStream::new(self.disconnect_guard.clone());
+            *self.response_stream.lock().unwrap() = Some(body_tx.downgrade());
             _ = tx.send(PyResponse::Body(PyResponseBody::new(
                 status,
                 headers,

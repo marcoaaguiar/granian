@@ -42,6 +42,12 @@ async def stream(_, protocol: HTTPProtocol):
         await trx.send_bytes(b'test')
 
 
+async def stream_err(_, protocol: HTTPProtocol):
+    trx = protocol.response_stream(200, [('content-type', 'text/plain; charset=utf-8')])
+    await trx.send_bytes(b'test')
+    1 / 0
+
+
 async def file(scope: Scope, protocol: HTTPProtocol):
     path = pathlib.Path.cwd() / 'tests' / 'fixtures' / 'static' / 'media.png'
     protocol.response_file(200, [('content-type', 'image/png'), ('content-length', '95')], str(path))
@@ -137,6 +143,7 @@ def app(scope, protocol):
         '/file': file,
         '/file_range': file_range,
         '/stream': stream,
+        '/stream_err': stream_err,
         '/ws_reject': ws_reject,
         '/ws_info': ws_info,
         '/ws_echo': ws_echo,
